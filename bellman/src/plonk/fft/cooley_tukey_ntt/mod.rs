@@ -1,6 +1,7 @@
 use crate::pairing::ff::PrimeField;
 use crate::multicore::*;
 use crate::plonk::domains::*;
+use crate::plonk::transparent_engine::proth::PartialReductionField;
 
 pub trait CTPrecomputations<F: PrimeField>: Send + Sync {
     fn new_for_domain_size(size: usize) -> Self;
@@ -210,6 +211,142 @@ pub(crate) fn serial_ct_ntt<F: PrimeField, P: CTPrecomputations<F>>(
     // }
 }
 
+pub(crate) fn serial_ct_ntt_partial_reduction<F: PartialReductionField, P: CTPrecomputations<F>>(
+    a: &mut [F],
+    log_n: u32,
+    precomputed_omegas: &P
+)
+{
+    assert_eq!(a.len(), precomputed_omegas.domain_size());
+    assert_eq!(a.len(), (1<<log_n) as usize);
+
+    let n = a.len();
+    if n == 1 {
+        return;
+    }
+    let mut pairs_per_group = n / 2;
+    let mut num_groups = 1;
+    let mut distance = n / 2;
+
+    let omegas_bit_reversed = precomputed_omegas.bit_reversed_omegas();
+
+    {
+        // special case for omega = 1
+        debug_assert!(num_groups == 1);
+        let idx_1 = 0;
+        let idx_2 = pairs_per_group;
+
+        for j in idx_1..idx_2 {
+            let u = a[j];
+            let v = a[j+distance];
+
+            let mut tmp = u;
+            tmp.sub_assign(&v);
+
+            a[j+distance] = tmp;
+            a[j].add_assign(&v);
+        }
+
+        pairs_per_group /= 2;
+        num_groups *= 2;
+        distance /= 2;
+    }
+
+    while num_groups < n {
+        debug_assert!(num_groups > 1);
+        for k in 0..num_groups {
+            let idx_1 = k * pairs_per_group * 2;
+            let idx_2 = idx_1 + pairs_per_group;
+            let s = omegas_bit_reversed[k];
+
+            for j in idx_1..idx_2 {
+                let u = a[j];
+                let mut v = a[j+distance];
+                v.mul_assign_unreduced(&s);
+
+                let mut tmp = u;
+                tmp.sub_assign(&v);
+
+                a[j+distance] = tmp;
+                a[j].add_assign(&v);
+            }
+        }
+
+        pairs_per_group /= 2;
+        num_groups *= 2;
+        distance /= 2;
+    }
+
+    a.iter_mut().for_each(|x| x.reduce());
+}
+
+pub(crate) fn serial_ct_ntt_unchecked<F: PartialReductionField, P: CTPrecomputations<F>>(
+    a: &mut [F],
+    log_n: u32,
+    precomputed_omegas: &P
+)
+{
+    assert_eq!(a.len(), precomputed_omegas.domain_size());
+    assert_eq!(a.len(), (1<<log_n) as usize);
+
+    let n = a.len();
+    if n == 1 {
+        return;
+    }
+    let mut pairs_per_group = n / 2;
+    let mut num_groups = 1;
+    let mut distance = n / 2;
+
+    let omegas_bit_reversed = precomputed_omegas.bit_reversed_omegas();
+
+    {
+        // special case for omega = 1
+        debug_assert!(num_groups == 1);
+        let idx_1 = 0;
+        let idx_2 = pairs_per_group;
+
+        for j in idx_1..idx_2 {
+            let u = a[j];
+            let v = a[j+distance];
+
+            let mut tmp = u;
+            tmp.sub_assign(&v);
+
+            a[j+distance] = tmp;
+            a[j].add_assign(&v);
+        }
+
+        pairs_per_group /= 2;
+        num_groups *= 2;
+        distance /= 2;
+    }
+
+    while num_groups < n {
+        debug_assert!(num_groups > 1);
+        for k in 0..num_groups {
+            let idx_1 = k * pairs_per_group * 2;
+            let idx_2 = idx_1 + pairs_per_group;
+            let s = omegas_bit_reversed[k];
+
+            for j in idx_1..idx_2 {
+                let mut u = unsafe { *a.get_unchecked(j) };
+                let mut v = unsafe { *a.get_unchecked(j+distance) };
+
+                v.mul_assign(&s);
+                u.sub_assign(&v);
+
+                unsafe {
+                    *a.get_unchecked_mut(j+distance) = u;
+                    a.get_unchecked_mut(j).add_assign(&v.clone());
+                }
+            }
+        }
+
+        pairs_per_group /= 2;
+        num_groups *= 2;
+        distance /= 2;
+    }
+}
 
 // pub(crate) fn serial_ct_ntt<F: PrimeField, P: CTPrecomputations<F>>(
 //     a: &mut [F],
@@ -489,8 +626,11 @@ mod test {
         use super::BitReversedOmegas;
         use crate::plonk::domains::Domain;
 
-        let poly_sizes = vec![1_000_000, 2_000_000, 4_000_000];
-
+        let poly_sizes = if cfg!(debug_assertions) {
+            vec![10_000]
+        } else {
+            vec![1_000_000, /*2_000_000, 4_000_000*/]
+        };
         // let poly_sizes = vec![8];
 
         fn check_permutation<F: PrimeField>(one: &[F], two: &[F]) -> (bool, Vec<usize>) {
@@ -540,13 +680,14 @@ mod test {
                 coeffs
             };
 
-            let res2 = {
+            let (res2, elapsed2) = {
                 let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
                 let mut coeffs = (0..poly_size).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
                 // println!("Coeffs = {:?}", coeffs);
                 let start = Instant::now();
                 serial_ct_ntt(&mut coeffs, log_n, &precomp);
-                println!("serial NTT for size {} taken {:?}", poly_size, start.elapsed());
+                let finish = start.elapsed();
+                println!("serial NTT for size {} taken {:?}", poly_size, finish);
 
                 let log_n = log_n as usize;
                 for k in 0..poly_size {
@@ -556,18 +697,95 @@ mod test {
                     }
                 }
 
-                coeffs
+                (coeffs, finish)
             };
 
+            let (res3, elapsed3) = {
+                let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+                let mut coeffs = (0..poly_size).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
+                // println!("Coeffs = {:?}", coeffs);
+                let start = Instant::now();
+                serial_ct_ntt_partial_reduction(&mut coeffs, log_n, &precomp);
+                let finish = start.elapsed();
+                println!("serial PRR for size {} taken {:?}", poly_size, finish);
+
+                let log_n = log_n as usize;
+                for k in 0..poly_size {
+                    let rk = bitreverse(k, log_n);
+                    if k < rk {
+                        coeffs.swap(rk, k);
+                    }
+                }
+
+                (coeffs, finish)
+            };
+
+            let (res4, elapsed4) = {
+                let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+                let mut coeffs = (0..poly_size).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
+                // println!("Coeffs = {:?}", coeffs);
+                let start = Instant::now();
+                serial_ct_ntt_unchecked(&mut coeffs, log_n, &precomp);
+                let finish = start.elapsed();
+                println!("serial UNC for size {} taken {:?}", poly_size, finish);
+
+                let log_n = log_n as usize;
+                for k in 0..poly_size {
+                    let rk = bitreverse(k, log_n);
+                    if k < rk {
+                        coeffs.swap(rk, k);
+                    }
+                }
+
+                (coeffs, finish)
+            };
+
+            let (res5, elapsed5) = {
+                let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+                let mut coeffs = (0..poly_size).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
+                // println!("Coeffs = {:?}", coeffs);
+                let start = Instant::now();
+                serial_ct_ntt(&mut coeffs, log_n, &precomp);
+                let finish = start.elapsed();
+                println!("serial NTT for size {} taken {:?}", poly_size, finish);
+
+                let log_n = log_n as usize;
+                for k in 0..poly_size {
+                    let rk = bitreverse(k, log_n);
+                    if k < rk {
+                        coeffs.swap(rk, k);
+                    }
+                }
+
+                (coeffs, finish)
+            };
+
+            let ntt_time = (elapsed2 + elapsed5).div_f32(2.);
+            let diff_pr = ntt_time.checked_sub(elapsed3);
+            if let Some(diff) = diff_pr {
+                println!("Partial reduction: speed up is {}%.", diff.as_nanos()*100/ntt_time.as_nanos());
+            } else {
+                println!("Partial reduction: no speed up.");
+            }
+
+            let diff_unc = ntt_time.checked_sub(elapsed4);
+            if let Some(diff) = diff_unc {
+                println!("Unchecked access: speed up is {}%.", diff.as_nanos()*100/ntt_time.as_nanos());
+            } else {
+                println!("Unchecked access: no speed up.");
+            }
+
             assert!(res1 == res2);
+            assert!(res1 == res4);
+            assert!(res1 == res5);
 
-            // let (valid, permutation) = check_permutation(&res1, &res2);
-
-            // if valid {
-            //     println!("Permutation = {:?}", permutation);
-            // }
-
-            // assert!(valid, "true = {:?}\n,got = {:?}", res1, res2);
+            // Print exact difference if exists
+            for i in 0..res1.len() {
+                if res1[i] != res3[i] {
+                    println!("{}\n{} at {}\n", res1[i], res3[i], i);
+                }
+            }
+            assert!(res1 == res3);
         }
     }
 
@@ -632,9 +850,3 @@ mod test {
         }
     }
 }
-
-
-
-
-
-

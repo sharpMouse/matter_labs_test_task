@@ -434,7 +434,7 @@ impl crate::ff::Field for Fr {
 
     #[inline]
     fn add_assign(&mut self, other: &Fr) {
-        self.0.add_nocarry(&other.0);
+        self.add_assign_unreduced(&other);
         self.reduce();
     }
 
@@ -513,47 +513,8 @@ impl crate::ff::Field for Fr {
 
     #[inline]
     fn mul_assign(&mut self, other: &Fr) {
-        let mut carry = 0;
-        let r0 =
-            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[0usize], &mut carry);
-        let r1 =
-            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[1usize], &mut carry);
-        let r2 =
-            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[2usize], &mut carry);
-        let r3 =
-            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[3usize], &mut carry);
-        let r4 = carry;
-        let mut carry = 0;
-        let r1 =
-            crate::ff::mac_with_carry(r1, (self.0).0[1usize], (other.0).0[0usize], &mut carry);
-        let r2 =
-            crate::ff::mac_with_carry(r2, (self.0).0[1usize], (other.0).0[1usize], &mut carry);
-        let r3 =
-            crate::ff::mac_with_carry(r3, (self.0).0[1usize], (other.0).0[2usize], &mut carry);
-        let r4 =
-            crate::ff::mac_with_carry(r4, (self.0).0[1usize], (other.0).0[3usize], &mut carry);
-        let r5 = carry;
-        let mut carry = 0;
-        let r2 =
-            crate::ff::mac_with_carry(r2, (self.0).0[2usize], (other.0).0[0usize], &mut carry);
-        let r3 =
-            crate::ff::mac_with_carry(r3, (self.0).0[2usize], (other.0).0[1usize], &mut carry);
-        let r4 =
-            crate::ff::mac_with_carry(r4, (self.0).0[2usize], (other.0).0[2usize], &mut carry);
-        let r5 =
-            crate::ff::mac_with_carry(r5, (self.0).0[2usize], (other.0).0[3usize], &mut carry);
-        let r6 = carry;
-        let mut carry = 0;
-        let r3 =
-            crate::ff::mac_with_carry(r3, (self.0).0[3usize], (other.0).0[0usize], &mut carry);
-        let r4 =
-            crate::ff::mac_with_carry(r4, (self.0).0[3usize], (other.0).0[1usize], &mut carry);
-        let r5 =
-            crate::ff::mac_with_carry(r5, (self.0).0[3usize], (other.0).0[2usize], &mut carry);
-        let r6 =
-            crate::ff::mac_with_carry(r6, (self.0).0[3usize], (other.0).0[3usize], &mut carry);
-        let r7 = carry;
-        self.mont_reduce(r0, r1, r2, r3, r4, r5, r6, r7);
+        self.mul_assign_unreduced(&other);
+        self.reduce();
     }
 
     #[inline]
@@ -621,7 +582,7 @@ impl Fr {
     }
 
     #[inline(always)]
-    fn mont_reduce(
+    fn mont_reduce_unreduced(
         &mut self,
         r0: u64,
         mut r1: u64,
@@ -671,6 +632,20 @@ impl Fr {
         (self.0).0[1usize] = r5;
         (self.0).0[2usize] = r6;
         (self.0).0[3usize] = r7;
+    }
+
+    #[inline(always)]
+    fn mont_reduce(&mut self,
+        r0: u64,
+        r1: u64,
+        r2: u64,
+        r3: u64,
+        r4: u64,
+        r5: u64,
+        r6: u64,
+        r7: u64,
+    ) {
+        self.mont_reduce_unreduced(r0, r1, r2, r3, r4, r5, r6, r7);
         self.reduce();
     }
 
@@ -736,5 +711,75 @@ impl crate::ff::SqrtField for Fr {
                 Some(r)
             }
         }
+    }
+}
+
+
+pub trait PartialReductionField: PrimeField {
+    /// Adds another element by this element without reduction.
+    fn add_assign_unreduced(&mut self, other: &Self);
+
+    /// Multiplies another element by this element without reduction.
+    fn mul_assign_unreduced(&mut self, other: &Self);
+
+    /// Reduces this element.
+    fn reduce(&mut self);
+}
+
+
+impl PartialReductionField for Fr {
+    #[inline(always)]
+    fn add_assign_unreduced(&mut self, other: &Fr) {
+        self.0.add_nocarry(&other.0);
+    }
+
+    #[inline]
+    fn mul_assign_unreduced(&mut self, other: &Fr) {
+        let mut carry = 0;
+        let r0 =
+            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[0usize], &mut carry);
+        let r1 =
+            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[1usize], &mut carry);
+        let r2 =
+            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[2usize], &mut carry);
+        let r3 =
+            crate::ff::mac_with_carry(0, (self.0).0[0usize], (other.0).0[3usize], &mut carry);
+        let r4 = carry;
+        let mut carry = 0;
+        let r1 =
+            crate::ff::mac_with_carry(r1, (self.0).0[1usize], (other.0).0[0usize], &mut carry);
+        let r2 =
+            crate::ff::mac_with_carry(r2, (self.0).0[1usize], (other.0).0[1usize], &mut carry);
+        let r3 =
+            crate::ff::mac_with_carry(r3, (self.0).0[1usize], (other.0).0[2usize], &mut carry);
+        let r4 =
+            crate::ff::mac_with_carry(r4, (self.0).0[1usize], (other.0).0[3usize], &mut carry);
+        let r5 = carry;
+        let mut carry = 0;
+        let r2 =
+            crate::ff::mac_with_carry(r2, (self.0).0[2usize], (other.0).0[0usize], &mut carry);
+        let r3 =
+            crate::ff::mac_with_carry(r3, (self.0).0[2usize], (other.0).0[1usize], &mut carry);
+        let r4 =
+            crate::ff::mac_with_carry(r4, (self.0).0[2usize], (other.0).0[2usize], &mut carry);
+        let r5 =
+            crate::ff::mac_with_carry(r5, (self.0).0[2usize], (other.0).0[3usize], &mut carry);
+        let r6 = carry;
+        let mut carry = 0;
+        let r3 =
+            crate::ff::mac_with_carry(r3, (self.0).0[3usize], (other.0).0[0usize], &mut carry);
+        let r4 =
+            crate::ff::mac_with_carry(r4, (self.0).0[3usize], (other.0).0[1usize], &mut carry);
+        let r5 =
+            crate::ff::mac_with_carry(r5, (self.0).0[3usize], (other.0).0[2usize], &mut carry);
+        let r6 =
+            crate::ff::mac_with_carry(r6, (self.0).0[3usize], (other.0).0[3usize], &mut carry);
+        let r7 = carry;
+        self.mont_reduce_unreduced(r0, r1, r2, r3, r4, r5, r6, r7);
+    }
+
+    #[inline(always)]
+    fn reduce(&mut self) {
+        self.reduce();
     }
 }
